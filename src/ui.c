@@ -3803,13 +3803,35 @@ static void dmm_draw_pill(int16_t right, uint16_t y, const char *label, uint16_t
     dmm_draw_pill_icon(right, y, 0, label, fill, fg, under, left_out);
 }
 
-static void ui_draw_status_bar(const char *title, uint16_t dot) {
+// Small Fixfast logo (tools/gen_brand.py) at the left of the status bar:
+// the tile in its own colour with the white bolt, the white wordmark beside
+// it, centred on the tile. Returns the x just after the wordmark.
+static int16_t ui_draw_status_brand(int16_t x, int16_t y) {
+    enum { GAP = 4 };
+    static const uint16_t white = RGB565(255, 255, 255);
+    int16_t wx = (int16_t)(x + (int16_t)BRAND_SM_TILE + GAP);
+
+    gfx_round_rect((uint16_t)x, (uint16_t)y, BRAND_SM_TILE, BRAND_SM_TILE, BRAND_SM_TILE_R, BRAND_TILE_COLOR, D_BG);
+    gfx_text(x, y, &font_brand_sm_bolt, BRAND_BOLT, white, BRAND_TILE_COLOR);
+    gfx_text(wx, (int16_t)(y + (int16_t)(BRAND_SM_TILE - BRAND_SM_WORD_H) / 2), &font_brand_sm_word, BRAND_WORD, white, D_BG);
+    return (int16_t)(wx + (int16_t)BRAND_SM_WORD_W);
+}
+
+// brand: the Fixfast logo, then the tool's dot and name. The multimeter
+// leaves it out: it shows the large logo beside its reading card instead.
+static void ui_draw_status_bar_ex(const char *title, uint16_t dot, uint8_t brand) {
     uint8_t pct_value = battery_percent();
     int16_t x;
 
     lcd_rect(0, 0, LCD_WIDTH, DMM_STATUS_H, D_BG);
-    gfx_round_rect(8, 8, 6, 6, 3, dot, D_BG);
-    gfx_text(19, 5, &font_small, title, D_TEXT, D_BG);
+    if (brand) {
+        int16_t dx = (int16_t)(ui_draw_status_brand(6, 3) + 10);
+        gfx_round_rect((uint16_t)dx, 8, 6, 6, 3, dot, D_BG);
+        gfx_text((int16_t)(dx + 11), 5, &font_small, title, D_TEXT, D_BG);
+    } else {
+        gfx_round_rect(8, 8, 6, 6, 3, dot, D_BG);
+        gfx_text(19, 5, &font_small, title, D_TEXT, D_BG);
+    }
 
     // Battery: a filled body with the percentage inside, split in two colours
     // exactly at the fill edge; a small tip, straight left and rounded right.
@@ -3862,8 +3884,12 @@ static void ui_draw_status_bar(const char *title, uint16_t dot) {
     }
 }
 
+static void ui_draw_status_bar(const char *title, uint16_t dot) {
+    ui_draw_status_bar_ex(title, dot, 1);
+}
+
 static void dmm_draw_status_bar(void) {
-    ui_draw_status_bar("Multimeter", D_ACCENT);
+    ui_draw_status_bar_ex("Multimeter", D_ACCENT, 0);
 }
 
 static uint16_t dmm_value_color(uint8_t warning) {
