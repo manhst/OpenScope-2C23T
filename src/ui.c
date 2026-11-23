@@ -570,8 +570,10 @@ static const uint16_t D_PLOT_AXIS = RGB565(82, 96, 116);
 // ---------------------------------------------------------------------------
 // Surfaces. A panel is a one-pixel outline around the ground (a tinted panel,
 // red or green, keeps its fill and gets a lighter edge of the same tint). A
-// focused control is filled solid with its accent; text on it is dark, with
-// ui_on_dim() for secondary labels. Corners stay tight: at most 8 px.
+// solid badge is filled with its accent; text on it is dark, with
+// ui_on_dim() for secondary labels on solid badges. A selected container
+// (chip, tile, card, list row) stays black inside a two-pixel accent frame.
+// Corners stay tight: at most 8 px.
 // ---------------------------------------------------------------------------
 
 enum { UI_RADIUS_MAX = 8 };
@@ -595,8 +597,11 @@ static uint16_t ui_card(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t
 
 static uint16_t ui_selected_card(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t r, uint16_t accent,
                                  uint16_t under) {
-    gfx_round_rect(x, y, w, h, ui_radius(r), accent, under);
-    return accent;
+    r = ui_radius(r);
+    gfx_round_rect(x, y, w, h, r, accent, under);
+    gfx_round_rect((uint16_t)(x + 2u), (uint16_t)(y + 2u), (uint16_t)(w - 4u), (uint16_t)(h - 4u),
+                   r > 2u ? (uint16_t)(r - 2u) : 0u, D_CARD, accent);
+    return D_CARD;
 }
 
 // Secondary text on a solid accent: dark, a little lighter than the main text.
@@ -1600,11 +1605,12 @@ static uint16_t ui_list_begin(const char *title, const char *icon, uint16_t acce
 // One row; returns the row's fill so a caller can draw a custom value.
 static uint16_t ui_list_row(uint16_t y, const char *label, const char *value,
                             uint8_t selected, uint8_t enabled, uint16_t accent) {
-    uint16_t fill = selected ? accent : D_CARD;
-    uint16_t label_fg = !enabled ? D_TRACK : (selected ? D_BG : D_MUTED);
-    uint16_t value_fg = !enabled ? D_TRACK : (selected ? D_BG : D_SUB);
+    uint16_t fill = D_CARD;
+    uint16_t label_fg = !enabled ? D_TRACK : (selected ? D_TEXT : D_MUTED);
+    uint16_t value_fg = !enabled ? D_TRACK : (selected ? accent : D_SUB);
     if (selected) {
-        gfx_round_rect(UI_LIST_X + 8u, y, UI_LIST_W - 16u, UI_LIST_ROW_H - 2u, 4, fill, D_CARD);
+        gfx_round_rect(UI_LIST_X + 8u, y, UI_LIST_W - 16u, UI_LIST_ROW_H - 2u, 4, accent, D_CARD);
+        gfx_round_rect(UI_LIST_X + 9u, (uint16_t)(y + 1u), UI_LIST_W - 18u, UI_LIST_ROW_H - 4u, 3, fill, accent);
     }
     gfx_text(UI_LIST_X + 16, (int16_t)(y + 1u), &font_medium, label, label_fg, fill);
     if (value) {
@@ -1621,7 +1627,7 @@ static void ui_list_digits(uint16_t y, uint32_t value, uint8_t editing, uint8_t 
     uint16_t adv = gfx_text_width(&font_medium, "0");
     uint16_t unit_w = unit ? (uint16_t)(gfx_text_width(&font_medium, unit) + 4u) : 0u;
     int16_t x = (int16_t)(UI_LIST_X + UI_LIST_W - 16 - (int16_t)(adv * 4u + unit_w));
-    uint16_t fg = !enabled ? D_TRACK : (selected ? D_BG : D_SUB);
+    uint16_t fg = !enabled ? D_TRACK : (selected ? accent : D_SUB);
 
     digits[0] = (char)('0' + ((value / 1000u) % 10u));
     digits[1] = (char)('0' + ((value / 100u) % 10u));
@@ -2418,8 +2424,8 @@ static void ui_draw_chip(uint16_t x, uint16_t y, uint16_t w, const char *label, 
                          uint16_t accent, uint8_t active, uint8_t enabled) {
     char shown[16];
     uint16_t bg = ui_chip_frame(x, y, w, accent, active);
-    uint16_t label_fg = !enabled ? D_TRACK : (active ? ui_on_dim(accent) : D_MUTED);
-    uint16_t value_fg = !enabled ? D_TRACK : (active ? D_BG : D_SUB);
+    uint16_t label_fg = !enabled ? D_TRACK : (active ? accent : D_MUTED);
+    uint16_t value_fg = !enabled ? D_TRACK : (active ? D_TEXT : D_SUB);
     const lcd_font_t *font = &font_medium;
 
     ui_chip_value(enabled ? value : "--", shown);
@@ -6881,17 +6887,17 @@ static void draw_gen_wave_card(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
 // Output state: a tall card with a power icon, green when the output is on.
 static void draw_gen_output_panel(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t bg) {
     uint8_t on = ui.running;
-    // On: the whole card turns solid green with dark content.
+    // On: a green frame around the card, the power knob solid green.
     uint16_t accent = on ? D_GREEN : D_MUTED;
     uint16_t cx = (uint16_t)(x + w / 2u);
     uint16_t cy = (uint16_t)(y + h / 2u - 6u);
 
     uint16_t card = on ? ui_selected_card(x, y, w, h, 14, D_GREEN, bg) : ui_card(x, y, w, h, 14, D_CARD, bg);
-    uint16_t knob = on ? D_BG : D_TRACK;
-    gfx_text_center((int16_t)x, (int16_t)(y + 6u), w, &font_small, "OUTPUT", on ? ui_on_dim(D_GREEN) : D_GEN, card);
+    uint16_t knob = on ? D_GREEN : D_TRACK;
+    gfx_text_center((int16_t)x, (int16_t)(y + 6u), w, &font_small, "OUTPUT", on ? D_GREEN : D_GEN, card);
     gfx_round_rect((uint16_t)(cx - 22u), (uint16_t)(cy - 22u), 44, 44, 22, knob, card);
-    gfx_text((int16_t)(cx - 8u), (int16_t)(cy - 8u), &font_icons, ICON_START_MD, on ? D_GREEN : D_SUB, knob);
-    gfx_text_center((int16_t)x, (int16_t)(cy + 28u), w, &font_large, on ? "On" : "Off", on ? D_BG : D_SUB, card);
+    gfx_text((int16_t)(cx - 8u), (int16_t)(cy - 8u), &font_icons, ICON_START_MD, on ? D_BG : D_SUB, knob);
+    gfx_text_center((int16_t)x, (int16_t)(cy + 28u), w, &font_large, on ? "On" : "Off", on ? D_TEXT : D_SUB, card);
     (void)accent;
 }
 
@@ -6965,7 +6971,7 @@ static void draw_gen_param_chip(uint16_t x, uint16_t y, uint16_t w, uint8_t para
     uint8_t active = enabled && ui.gen_param == param;
     uint8_t arbitrary = ui.gen_wave == SIGGEN_WAVE_ARBITRARY;
     uint16_t bg;
-    uint16_t fg = active ? D_BG : D_SUB;
+    uint16_t fg = active ? D_TEXT : D_SUB;
     uint16_t vy = (uint16_t)(y + 14u);
     int8_t sel = active ? (int8_t)gen_freq_edit_pos : -1;
 
@@ -6975,7 +6981,7 @@ static void draw_gen_param_chip(uint16_t x, uint16_t y, uint16_t w, uint8_t para
         char digits[5];
         int16_t ex;
         bg = ui_chip_frame(x, y, w, D_GEN, active);
-        gfx_text((int16_t)(x + 8u), (int16_t)(y + 3u), &font_small, gen_param_labels[param], active ? ui_on_dim(D_GEN) : D_MUTED, bg);
+        gfx_text((int16_t)(x + 8u), (int16_t)(y + 3u), &font_small, gen_param_labels[param], active ? D_GEN : D_MUTED, bg);
         if (param == GEN_PARAM_FREQ) {
             static const char *const units[] = {"Hz", "kHz", "MHz"};
             uint8_t unit = gen_freq_unit < GEN_FREQ_UNIT_COUNT ? gen_freq_unit : 0u;
@@ -7137,16 +7143,14 @@ static void draw_mode_menu_card(uint8_t index) {
     uint16_t y = (uint16_t)(Y0 + (index / 2u) * (H + GAP));
     uint16_t bg = selected ? ui_selected_card(x, y, W, H, 14, card->accent, D_BG) : ui_card(x, y, W, H, 14, D_CARD, D_BG);
 
-    // Icon tile: tinted when idle; on the solid accent of a selected card
-    // it turns dark with the icon in the accent.
+    // Icon tile: tinted when idle, solid accent when selected.
     gfx_round_rect((uint16_t)(x + 12u), (uint16_t)(y + 11u), 36, 36, 6,
-                   selected ? D_BG : card->tint, bg);
+                   selected ? card->accent : card->tint, bg);
     gfx_text((int16_t)(x + 17u), (int16_t)(y + 16u), &font_icons, card->icon,
-             card->accent, selected ? D_BG : card->tint);
+             selected ? D_BG : card->accent, selected ? card->accent : card->tint);
 
-    gfx_text((int16_t)(x + 12u), (int16_t)(y + 48u), &font_medium, card->title, selected ? D_BG : D_TEXT, bg);
-    gfx_text((int16_t)(x + 12u), (int16_t)(y + 64u), &font_small, card->subtitle,
-             selected ? ui_on_dim(card->accent) : D_MUTED, bg);
+    gfx_text((int16_t)(x + 12u), (int16_t)(y + 48u), &font_medium, card->title, selected ? D_TEXT : D_SUB, bg);
+    gfx_text((int16_t)(x + 12u), (int16_t)(y + 64u), &font_small, card->subtitle, D_MUTED, bg);
 }
 
 static void ui_draw_key_hints(uint16_t y, const char *move, const char *ok, const char *back);
@@ -7476,14 +7480,13 @@ static void draw_settings_tile(uint8_t row, uint16_t x, uint16_t y, uint16_t w, 
     uint16_t accent = danger ? D_RED : D_SETTINGS;
     uint16_t tint = danger ? D_RED_TINT : D_SETTINGS_TINT;
     uint16_t bg = selected ? ui_selected_card(x, y, w, h, 12, accent, D_BG) : ui_card(x, y, w, h, 12, D_CARD, D_BG);
-    gfx_round_rect((uint16_t)(x + 9u), (uint16_t)(y + 9u), 24, 24, 5, selected ? D_BG : tint, bg);
+    gfx_round_rect((uint16_t)(x + 9u), (uint16_t)(y + 9u), 24, 24, 5, selected ? accent : tint, bg);
     gfx_text((int16_t)(x + 13u), (int16_t)(y + 13u), &font_icons, settings_tile_icons[row],
-             accent, selected ? D_BG : tint);
-    gfx_text((int16_t)(x + 39u), (int16_t)(y + 14u), &font_small, settings_tile_labels[row],
-             selected ? ui_on_dim(accent) : D_MUTED, bg);
+             selected ? D_BG : accent, selected ? accent : tint);
+    gfx_text((int16_t)(x + 39u), (int16_t)(y + 14u), &font_small, settings_tile_labels[row], D_MUTED, bg);
 
     settings_display_value(row, value);
-    gfx_text((int16_t)(x + 10u), (int16_t)(y + 35u), &font_medium, value, selected ? D_BG : D_TEXT, bg);
+    gfx_text((int16_t)(x + 10u), (int16_t)(y + 35u), &font_medium, value, selected ? accent : D_TEXT, bg);
 
     // Level rows get a step meter beside the value: one bar per level above
     // the lowest setting for beep (OFF has none), one per setting for
@@ -7494,9 +7497,7 @@ static void draw_settings_tile(uint8_t row, uint16_t x, uint16_t y, uint16_t w, 
         for (uint8_t i = 0; i < bars; ++i) {
             uint16_t bx = (uint16_t)(x + w - 12u - (uint16_t)(bars - 1u - i) * 6u - 4u);
             uint16_t bh = (uint16_t)(4u + i * 2u);
-            uint16_t on = selected ? D_BG : accent;
-            uint16_t off = selected ? gfx_blend(D_BG, accent, 5) : D_TRACK;
-            gfx_round_rect(bx, (uint16_t)(y + 48u - bh), 4, bh, 1, i < level ? on : off, bg);
+            gfx_round_rect(bx, (uint16_t)(y + 48u - bh), 4, bh, 1, i < level ? accent : D_TRACK, bg);
         }
     }
 }
