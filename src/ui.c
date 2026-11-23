@@ -14,6 +14,7 @@
 #include "fft.h"
 #include "gfx.h"
 #include "ui_icons.h"
+#include "ui_brand.h"
 #include "arb_csv.h"
 
 #include <stdint.h>
@@ -3633,14 +3634,19 @@ static uint8_t dmm_voltage_warning_level(void) {
 // Multimeter screen: flat dark theme, rounded cards, anti-aliased type.
 // Layout (320x240): status bar 0-22, reading card 26-162, stats 168-204,
 // group pills 210-236. Continuity and live-wire states use one tall card
-// (26-204) instead of the reading card plus stats.
+// (26-204) instead of the reading card plus stats. The left quarter of the
+// card row holds the Fixfast logo on the plain background (x 8-76); the card
+// itself spans the other three quarters (x 84-312).
 // ---------------------------------------------------------------------------
 
 enum {
     DMM_X = 8,
     DMM_W = 304,
-    DMM_IN_X = 20,
-    DMM_IN_W = 280,
+    DMM_LOGO_W = 68,
+    DMM_CARD_X = DMM_X + DMM_LOGO_W + 8,
+    DMM_CARD_W = DMM_X + DMM_W - DMM_CARD_X,
+    DMM_IN_X = DMM_CARD_X + 10,
+    DMM_IN_W = DMM_CARD_W - 20,
     DMM_STATUS_H = 22,
     DMM_CARD_Y = 26,
     DMM_CARD_H = 136,
@@ -3881,7 +3887,7 @@ static int16_t dmm_draw_tag_left(int16_t x, uint16_t y, const char *icon, const 
 }
 
 static void dmm_draw_card_header(uint16_t card_color, uint16_t title_color, uint8_t warning) {
-    int16_t right = (int16_t)(DMM_X + DMM_W - 12);
+    int16_t right = (int16_t)(DMM_IN_X + DMM_IN_W);
     int16_t title_end;
 
     title_end = gfx_text(DMM_IN_X, DMM_CARD_Y + 7, &font_medium, dmm_mode_names[ui.dmm_mode], title_color, card_color);
@@ -4017,7 +4023,7 @@ static void dmm_draw_reading_card(void) {
     uint16_t bar_color = warning >= 2u ? D_RED : (warning ? D_AMBER : D_ACCENT);
     int16_t x;
 
-    gfx_round_rect(DMM_X, DMM_CARD_Y, DMM_W, DMM_CARD_H, 14, card, D_BG);
+    gfx_round_rect(DMM_CARD_X, DMM_CARD_Y, DMM_CARD_W, DMM_CARD_H, 14, card, D_BG);
     dmm_draw_card_header(card, D_SUB, warning);
 
     // A relative reading is a difference: show its sign either way.
@@ -4063,6 +4069,12 @@ static void dmm_draw_reading_card(void) {
         x = gfx_text(DMM_IN_X, VALUE_Y, &font_huge, value, value_color, card);
         // Units sit on the reading's baseline.
         gfx_text((int16_t)(x + 6), (int16_t)(VALUE_Y + font_huge.ascent - font_large.ascent), &font_large, unit, unit_color, card);
+    } else if (dmm_text_is_number(value) &&
+               gfx_text_width(&font_huge, value) + 3u + gfx_text_width(&font_medium, unit) <= DMM_IN_W) {
+        // The card is three quarters wide (the logo has the rest): a long
+        // reading such as -12.35 keeps the big digits with a smaller unit.
+        x = gfx_text(DMM_IN_X, VALUE_Y, &font_huge, value, value_color, card);
+        gfx_text((int16_t)(x + 3), (int16_t)(VALUE_Y + font_huge.ascent - font_medium.ascent), &font_medium, unit, unit_color, card);
     } else {
         uint16_t color = dmm_text_is_number(value) ? value_color : D_SUB;
         x = gfx_text(DMM_IN_X, VALUE_Y + 26, &font_large, value, color, card);
@@ -4101,32 +4113,53 @@ static void dmm_draw_stats(void) {
 
 // Live wire: one tall card. Detected turns it red; the idle card says how
 // to use the mode, which is the one thing people get wrong with it.
+// The icon sits above the text, both centred: the card is three quarters
+// wide, which leaves no room for the hint beside the icon.
 static void dmm_draw_live_card(uint8_t detected) {
-    enum { CX = DMM_X + 44, CY = DMM_CARD_Y + 86 };
+    enum { CX = DMM_CARD_X + DMM_CARD_W / 2, CY = DMM_CARD_Y + 66, TEXT_Y = DMM_CARD_Y + 104 };
     uint16_t card = detected ? D_RED_CARD : D_CARD;
     uint16_t icon_bg = detected ? D_RED : D_TRACK;
 
-    gfx_round_rect(DMM_X, DMM_CARD_Y, DMM_W, DMM_TALL_H, 14, card, D_BG);
+    gfx_round_rect(DMM_CARD_X, DMM_CARD_Y, DMM_CARD_W, DMM_TALL_H, 14, card, D_BG);
     gfx_text(DMM_IN_X, DMM_CARD_Y + 7, &font_medium, dmm_mode_names[ui.dmm_mode], detected ? D_RED_SUB : D_SUB, card);
     gfx_round_rect(CX - 28, CY - 28, 56, 56, 28, icon_bg, card);
     dmm_icon(CX - 16, CY - 16, ICON_ZAP_XL, detected ? D_BG : D_MUTED, icon_bg);
     if (detected) {
-        gfx_text(DMM_X + 88, CY - 28, &font_large, "Detected", D_TEXT, card);
-        gfx_text(DMM_X + 89, CY + 6, &font_medium, "Confirm with a voltage reading", D_RED_SUB, card);
+        gfx_text_center(DMM_IN_X, TEXT_Y, DMM_IN_W, &font_large, "Detected", D_TEXT, card);
+        gfx_text_center(DMM_IN_X, TEXT_Y + 36, DMM_IN_W, &font_medium, "Confirm with a", D_RED_SUB, card);
+        gfx_text_center(DMM_IN_X, TEXT_Y + 52, DMM_IN_W, &font_medium, "voltage reading", D_RED_SUB, card);
     } else {
-        gfx_text(DMM_X + 88, CY - 28, &font_large, "No live wire", D_SUB, card);
-        gfx_text(DMM_X + 89, CY + 6, &font_medium, "Touch the red probe to the wire", D_MUTED, card);
+        gfx_text_center(DMM_IN_X, TEXT_Y, DMM_IN_W, &font_large, "No live wire", D_SUB, card);
+        gfx_text_center(DMM_IN_X, TEXT_Y + 36, DMM_IN_W, &font_medium, "Touch the red probe", D_MUTED, card);
+        gfx_text_center(DMM_IN_X, TEXT_Y + 52, DMM_IN_W, &font_medium, "to the wire", D_MUTED, card);
     }
+}
+
+// Fixfast logo (tools/gen_brand.py) in the left quarter of the card row, on
+// the plain background: the tile in its own colour with the white bolt, the
+// white wordmark under it, the pair centred both ways in the column.
+static void dmm_draw_brand(uint16_t h) {
+    enum { GAP = 8 };
+    static const uint16_t white = RGB565(255, 255, 255);
+    int16_t y = (int16_t)(DMM_CARD_Y + (h - (BRAND_TILE + GAP + BRAND_WORD_H)) / 2u);
+    int16_t tx = (int16_t)(DMM_X + (DMM_LOGO_W - BRAND_TILE) / 2u);
+    int16_t wx = (int16_t)(DMM_X + (DMM_LOGO_W - BRAND_WORD_W) / 2u);
+
+    gfx_round_rect((uint16_t)tx, (uint16_t)y, BRAND_TILE, BRAND_TILE, BRAND_TILE_R, BRAND_TILE_COLOR, D_BG);
+    gfx_text(tx, y, &font_brand_bolt, BRAND_BOLT, white, BRAND_TILE_COLOR);
+    gfx_text(wx, (int16_t)(y + (int16_t)BRAND_TILE + GAP), &font_brand_word, BRAND_WORD, white, D_BG);
 }
 
 static void draw_dmm_immersive_panel(void) {
     lcd_rect(0, DMM_STATUS_H, LCD_WIDTH, DMM_KEYS_Y - DMM_STATUS_H - 2u, D_BG);
 
     if (ui.dmm_mode == DMM_MODE_LIVE) {
+        dmm_draw_brand(DMM_TALL_H);
         dmm_draw_live_card(dmm_live_wire_detected());
         return;
     }
 
+    dmm_draw_brand(DMM_CARD_H);
     dmm_draw_reading_card();
     dmm_draw_stats();
 }
