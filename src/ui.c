@@ -208,8 +208,11 @@ typedef struct {
 } dmm_stats_t;
 
 enum {
-    SCOPE_TRACE_STEP = 3,
-    SCOPE_TRACE_MAX_POINTS = 101,
+    // One trace point per pixel column. At 3 px per point a square wave's
+    // edge became a diagonal 3 px wide, although the 300 samples on screen
+    // already place it within one column.
+    SCOPE_TRACE_STEP = 1,
+    SCOPE_TRACE_MAX_POINTS = LCD_WIDTH + 1u,
     SCOPE_SAMPLE_COUNT = 2048,
     SCOPE_SAMPLE_BYTES = SCOPE_SAMPLE_COUNT * 2,
     SCOPE_SAMPLES_PER_DIV = 25,
@@ -235,7 +238,7 @@ typedef struct {
     uint8_t valid;
     uint8_t ch2;
     uint8_t timebase;
-    uint8_t count;
+    uint16_t count;
     uint16_t phase;
     uint16_t frame_id;
     uint16_t width;
@@ -244,7 +247,7 @@ typedef struct {
     int16_t amp;
     int16_t min_y;
     int16_t max_y;
-    int16_t y[SCOPE_TRACE_MAX_POINTS];
+    uint8_t y[SCOPE_TRACE_MAX_POINTS]; // a screen row fits a byte: 3x the points for ~1.6x the RAM
 } scope_trace_cache_t;
 
 static ui_state_t ui = {
@@ -362,8 +365,8 @@ static uint8_t scope_roll_trigger_pending;
 static uint16_t scope_roll_trigger_seq;
 static uint16_t scope_roll_trigger_target_seq;
 static int16_t scope_roll_display_offset;
-static int16_t scope_after_y[2][SCOPE_TRACE_MAX_POINTS];
-static uint8_t scope_after_count[2];
+static uint8_t scope_after_y[2][SCOPE_TRACE_MAX_POINTS];
+static uint16_t scope_after_count[2];
 static uint8_t scope_after_valid[2];
 static uint8_t ui_math_menu_visible = 0; // 0 = Hidden, 1 = Displayed on Screen
 static uint8_t scope_math_selected = 0; // 0=MODE, 1=MATH OP, 2=FFT DISPLAY/XY, 3=WINDOW, 4=CLEAR HISTORY, 5=HIDE TRACES
@@ -4429,7 +4432,7 @@ static void scope_trace_invalidate(void) {
         for (uint8_t ch = 0; ch < 2u; ++ch) {
             if (scope_ch_enabled[ch] && scope_trace_cache[ch].valid) {
                 scope_after_count[ch] = scope_trace_cache[ch].count;
-                for (uint8_t i = 0; i < scope_trace_cache[ch].count; ++i) {
+                for (uint16_t i = 0; i < scope_trace_cache[ch].count; ++i) {
                     scope_after_y[ch][i] = scope_trace_cache[ch].y[i];
                 }
                 scope_after_valid[ch] = 1;
@@ -5075,11 +5078,7 @@ static int16_t scope_scaled_sample_y(uint8_t ch, uint8_t raw, int16_t center, in
     return (int16_t)y;
 }
 
-static uint8_t scope_display_sample_raw(uint16_t x, uint8_t ch, uint16_t width) {
-    if (!width) return 128u;
-    if (x > width) x = width;
-    uint16_t visible_samples = scope_visible_sample_count();
-    uint16_t idx = (uint16_t)((uint32_t)x * (visible_samples - 1u) / width);
+static uint8_t scope_display_raw_at(uint16_t idx, uint8_t ch) {
     if (ui.scope_display == SCOPE_DISPLAY_ROLL) {
         int32_t h_offset = scope_trigger_locked ? 0 : scope_h_pos_sample_offset();
         idx = (uint16_t)(((uint32_t)((int32_t)idx + (int32_t)scope_roll_offset + h_offset)) &
@@ -5088,6 +5087,24 @@ static uint8_t scope_display_sample_raw(uint16_t x, uint8_t ch, uint16_t width) 
         idx = (uint16_t)(scope_capture_window_start() + idx);
     }
     return scope_samples[(uint16_t)(idx * 2u + (ch ? 1u : 0u))];
+}
+
+static uint8_t scope_display_sample_raw(uint16_t x, uint8_t ch, uint16_t width) {
+    if (!width) return 128u;
+    if (x > width) x = width;
+    uint16_t last = (uint16_t)(scope_visible_sample_count() - 1u);
+    uint32_t pos = ((uint32_t)x * last * 256u) / width; // sample index, 8.8 fixed point
+    uint16_t idx = (uint16_t)(pos >> 8);
+    uint8_t raw = scope_display_raw_at(idx, ch);
+    uint32_t frac = pos & 0xFFu;
+
+    // Fewer samples than columns (the fastest timebases): join neighbouring
+    // samples instead of holding each across several columns as a staircase.
+    if (last < width && frac && idx < last) {
+        int32_t next = scope_display_raw_at((uint16_t)(idx + 1u), ch);
+        raw = (uint8_t)((int32_t)raw + ((next - (int32_t)raw) * (int32_t)frac + 128) / 256);
+    }
+    return raw;
 }
 
 static int16_t scope_sample_y(uint16_t x,
@@ -6298,7 +6315,7 @@ static void draw_scope_afterglow_trace(uint8_t ch,
     uint16_t i = SCOPE_TRACE_STEP;
     uint16_t dim = scope_dim_color(color);
 
-    for (uint8_t point = 1; point < scope_after_count[ch]; ++point, i = (uint16_t)(i + SCOPE_TRACE_STEP)) {
+    for (uint16_t point = 1; point < scope_after_count[ch]; ++point, i = (uint16_t)(i + SCOPE_TRACE_STEP)) {
         if (i > width + SCOPE_TRACE_STEP) {
             break;
         }
@@ -6416,9 +6433,9 @@ static scope_trace_cache_t *scope_trace_prepare(uint8_t ch2,
         return cache;
     }
 
-    uint8_t count = 0;
+    uint16_t count = 0;
     for (uint16_t x = 0; x <= width && count < SCOPE_TRACE_MAX_POINTS; x = (uint16_t)(x + SCOPE_TRACE_STEP)) {
-        cache->y[count++] = scope_sample_y(x, ch2, center, amp, width, min_y, max_y);
+        cache->y[count++] = (uint8_t)scope_sample_y(x, ch2, center, amp, width, min_y, max_y);
         if ((uint16_t)(x + SCOPE_TRACE_STEP) < x) {
             break;
         }
@@ -6530,7 +6547,7 @@ static void draw_scope_trace(uint16_t color,
     int16_t prev_x = x0;
     int16_t prev_y = trace->y[0];
     uint16_t i = SCOPE_TRACE_STEP;
-    for (uint8_t point = 1; point < trace->count; ++point, i = (uint16_t)(i + SCOPE_TRACE_STEP)) {
+    for (uint16_t point = 1; point < trace->count; ++point, i = (uint16_t)(i + SCOPE_TRACE_STEP)) {
         int16_t x = (int16_t)(x0 + i);
         int16_t y = trace->y[point];
         lcd_line(prev_x, prev_y, x, y, color);
@@ -9030,6 +9047,16 @@ static void scope_cycle_active_channel_vdiv(int8_t dir) {
     scope_hw_arm();
 }
 
+// Up/down outside the menus: dir > 0 = next larger V/div. Stops at the ends
+// instead of wrapping, so a held key cannot jump from 20 mV to 10 V.
+static void scope_step_active_channel_vdiv(int8_t dir) {
+    uint8_t idx = ui.active_ch == 2u ? 1u : 0u;
+
+    if (dir < 0 ? scope_vdiv_ch[idx] > 0u : scope_vdiv_ch[idx] + 1u < SCOPE_VDIV_COUNT) {
+        scope_cycle_active_channel_vdiv(dir);
+    }
+}
+
 static void scope_toggle_active_channel_coupling(void) {
     uint8_t idx = ui.active_ch == 2u ? 1u : 0u;
 
@@ -9994,6 +10021,10 @@ static void ui_handle_vertical_key(int8_t screen_dir, uint8_t repeat) {
                ui.scope_trigger_menu &&
                ui.scope_param == SCOPE_PARAM_TRIG_LEVEL) {
         scope_adjust_trigger_level_key((int8_t)-screen_dir, repeat);
+    } else if (ui.mode == UI_MODE_SCOPE && ui.scope_param == SCOPE_PARAM_POSITION) {
+        // No menu open: V/div, as on the stock firmware (up = larger V/div,
+        // the reverse of the channel menu). MOVE still moves the trace.
+        scope_step_active_channel_vdiv((int8_t)-screen_dir);
     } else {
         adjust_current((int8_t)-screen_dir, repeat);
     }

@@ -596,6 +596,25 @@ static void test_auto_timeout_and_cancel(void) {
     auto_assert_applied();
 }
 
+// Up/down with no menu open step the active channel's V/div (stock
+// behaviour) and stop at the ends.
+static void test_vertical_keys_set_vdiv(void) {
+    setup();
+    ui.active_ch = 2;
+    scope_step_active_channel_vdiv(-1); // smaller
+    assert(scope_vdiv_ch[1] == 4 && scope_vdiv_ch[0] == 5);
+    scope_step_active_channel_vdiv(1); // larger
+    scope_step_active_channel_vdiv(1);
+    assert(scope_vdiv_ch[1] == 6 && ui.scope_vdiv == 6);
+
+    scope_vdiv_ch[1] = 0;
+    scope_step_active_channel_vdiv(-1);
+    assert(scope_vdiv_ch[1] == 0);
+    scope_vdiv_ch[1] = SCOPE_VDIV_COUNT - 1u;
+    scope_step_active_channel_vdiv(1);
+    assert(scope_vdiv_ch[1] == SCOPE_VDIV_COUNT - 1u);
+}
+
 int main(void) {
     test_hardware_timing();
     test_frequency();
@@ -610,6 +629,7 @@ int main(void) {
     test_auto_clipped();
     test_auto_channel_trigger_modes();
     test_auto_timeout_and_cancel();
+    test_vertical_keys_set_vdiv();
     printf("scope measurements regression tests passed (HW4=%d)\n", HW_TARGET_HW40);
     return 0;
 }
