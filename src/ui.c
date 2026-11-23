@@ -4216,6 +4216,9 @@ static void dmm_draw_brand(uint16_t h) {
 
 static void draw_dmm_immersive_panel(void) {
     lcd_rect(0, DMM_STATUS_H, LCD_WIDTH, DMM_KEYS_Y - DMM_STATUS_H - 2u, D_BG);
+    // The same rule as under the status bar, between the stats (or the tall
+    // live-wire card) and the keys; inside the rows this panel repaints.
+    lcd_rect(0, DMM_STATS_Y + DMM_STATS_H + 2u, LCD_WIDTH, 1, gfx_blend(D_ACCENT, D_BG, 12));
 
     if (ui.dmm_mode == DMM_MODE_LIVE) {
         dmm_draw_brand(DMM_TALL_H);
