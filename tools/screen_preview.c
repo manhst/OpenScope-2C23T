@@ -325,5 +325,21 @@ int main(void) {
     draw_settings_menu(); draw_boot_export_overlay(); save("settings-export-progress");
     ui.boot_export_state = BOOT_EXPORT_UI_NONE;
     ui.overlay = UI_OVERLAY_NONE;
+
+    // Status bar extras: battery voltage and the auto-sleep countdown.
+    ui_settings.sleep_enabled = 1; // 10 minutes
+    ui.sleep_ms = 3u * 60u * 1000u + 20000u;
+    ui.overlay = UI_OVERLAY_MODE_MENU; ui.menu_index = 0;
+    draw_mode_menu(); save("status-sleep-menu");
+    ui.overlay = UI_OVERLAY_NONE;
+    ui.sleep_ms = 10u * 60u * 1000u - 42000u;
+    enter(DMM_MODE_DCV);
+    feed(1, "1235", 4, 0, 0, 2);
+    shot("status-sleep-last-minute");
+    ui.sleep_ms = 60000u;
+    ui.mode = UI_MODE_GEN; ui.running = 1; gen_running = 1; charging = 1;
+    draw_generator_immersive(); save("status-crowded-gen");
+    ui.mode = UI_MODE_DMM; gen_running = 0; charging = 0;
+    ui_settings.sleep_enabled = 0; ui.sleep_ms = 0;
     return 0;
 }

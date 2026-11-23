@@ -190,6 +190,8 @@ typedef struct {
     uint8_t charging;
     uint8_t full;
     uint8_t usb_configured;
+    uint16_t centivolts; // battery voltage as shown, 10 mV steps
+    uint16_t sleep_shown; // auto-sleep countdown as shown, see ui_sleep_shown()
 } battery_snapshot_t;
 
 typedef struct {
@@ -1003,12 +1005,40 @@ static uint8_t battery_low_alert(void) {
     return 0;
 }
 
+static uint32_t settings_sleep_timeout_ms(void);
+
+// Battery voltage in 10 mV steps, as the status bar prints it (3.95V).
+static uint16_t battery_centivolts(void) {
+    return (uint16_t)((battery_millivolts() + 5u) / 10u);
+}
+
+// Auto-sleep countdown as the status bar shows it: whole minutes (rounded
+// up) while a minute or more is left, then seconds. Encoded as minutes, or
+// 0x8000 | seconds in the last minute; 0 when auto-sleep is off. Showing
+// minutes keeps the bar from repainting every second, which on the menu and
+// settings pages means a full-screen render.
+static uint16_t ui_sleep_shown(void) {
+    uint32_t timeout = settings_sleep_timeout_ms();
+    uint32_t left_s;
+
+    if (!timeout) {
+        return 0;
+    }
+    left_s = (timeout - (ui.sleep_ms < timeout ? ui.sleep_ms : timeout) + 999u) / 1000u;
+    if (left_s >= 60u) {
+        return (uint16_t)((left_s + 59u) / 60u);
+    }
+    return (uint16_t)(0x8000u | left_s);
+}
+
 static void battery_snapshot_store(void) {
     battery_snapshot.valid = 1;
     battery_snapshot.pct = battery_percent();
     battery_snapshot.charging = battery_is_charging();
     battery_snapshot.full = battery_display_full();
     battery_snapshot.usb_configured = usb_cdc_is_configured();
+    battery_snapshot.centivolts = battery_centivolts();
+    battery_snapshot.sleep_shown = ui_sleep_shown();
 }
 
 static uint8_t battery_snapshot_changed(void) {
@@ -1016,17 +1046,23 @@ static uint8_t battery_snapshot_changed(void) {
     uint8_t charging = battery_is_charging();
     uint8_t full = battery_display_full();
     uint8_t usb_configured = usb_cdc_is_configured();
+    uint16_t centivolts = battery_centivolts();
+    uint16_t sleep_shown = ui_sleep_shown();
 
     if (!battery_snapshot.valid ||
         pct != battery_snapshot.pct ||
         charging != battery_snapshot.charging ||
         full != battery_snapshot.full ||
-        usb_configured != battery_snapshot.usb_configured) {
+        usb_configured != battery_snapshot.usb_configured ||
+        centivolts != battery_snapshot.centivolts ||
+        sleep_shown != battery_snapshot.sleep_shown) {
         battery_snapshot.valid = 1;
         battery_snapshot.pct = pct;
         battery_snapshot.charging = charging;
         battery_snapshot.full = full;
         battery_snapshot.usb_configured = usb_configured;
+        battery_snapshot.centivolts = centivolts;
+        battery_snapshot.sleep_shown = sleep_shown;
         return 1;
     }
     return 0;
@@ -3856,6 +3892,7 @@ static int16_t ui_draw_status_brand(int16_t x, int16_t y) {
 static void ui_draw_status_bar_ex(const char *title, uint16_t dot, uint8_t brand) {
     uint8_t pct_value = battery_percent();
     int16_t x;
+    int16_t title_end;
 
     lcd_rect(0, 0, LCD_WIDTH, DMM_STATUS_H, D_BG);
     // A rule in the tool's colour under the bar (brand teal on the menu),
@@ -3865,10 +3902,10 @@ static void ui_draw_status_bar_ex(const char *title, uint16_t dot, uint8_t brand
     if (brand) {
         int16_t dx = (int16_t)(ui_draw_status_brand(6, 3) + 10);
         gfx_round_rect((uint16_t)dx, 8, 6, 6, 3, dot, D_BG);
-        gfx_text((int16_t)(dx + 11), 5, &font_small, title, D_TEXT, D_BG);
+        title_end = gfx_text((int16_t)(dx + 11), 5, &font_small, title, D_TEXT, D_BG);
     } else {
         gfx_round_rect(8, 8, 6, 6, 3, dot, D_BG);
-        gfx_text(19, 5, &font_small, title, D_TEXT, D_BG);
+        title_end = gfx_text(19, 5, &font_small, title, D_TEXT, D_BG);
     }
 
     // Battery: a filled body with the percentage inside, split in two colours
@@ -3907,6 +3944,27 @@ static void ui_draw_status_bar_ex(const char *title, uint16_t dot, uint8_t brand
         gfx_text(nx, BY, &font_small, num, D_BG, level);
         gfx_clip_reset();
         x = (int16_t)(BX - 4);
+        // Battery voltage beside the gauge, e.g. 3.95V, only when it leaves
+        // room for the charge, USB and GEN marks to its left and the title.
+        {
+            char volts[8];
+            char frac[4];
+            uint16_t cv = battery_centivolts();
+            int16_t marks = (int16_t)((charging ? 15 : 0) + (usb_cdc_is_configured() ? 16 : 0) +
+                                      ((gen_running || gen_output_applied)
+                                           ? (int16_t)gfx_text_width(&font_small, "GEN") + 16 : 0));
+            uint16_t vw;
+            scope_format_u32(volts, cv / 100u);
+            ui_text_append(volts, ".", sizeof(volts));
+            scope_format_u32(frac, (uint32_t)(100u + cv % 100u));
+            ui_text_append(volts, frac + 1, sizeof(volts));
+            ui_text_append(volts, "V", sizeof(volts));
+            vw = gfx_text_width(&font_small, volts);
+            if (x - (int16_t)vw - 6 - marks > title_end + 8) {
+                gfx_text_right(x, BY, &font_small, volts, D_SUB, D_BG);
+                x = (int16_t)(x - (int16_t)vw - 6);
+            }
+        }
         if (charging) {
             dmm_icon((int16_t)(x - 11), 6, ICON_CHARGE_SM, D_GREEN, D_BG);
             x = (int16_t)(x - 15);
@@ -3919,6 +3977,25 @@ static void ui_draw_status_bar_ex(const char *title, uint16_t dot, uint8_t brand
     if (gen_running || gen_output_applied) {
         int16_t left;
         dmm_draw_pill(x, 4, "GEN", D_GEN, D_BG, D_BG, &left);
+        x = left;
+    }
+    // Auto-sleep countdown: a moon and the time left, amber in the last
+    // minute. Left out when it would run into the title.
+    {
+        uint16_t shown = ui_sleep_shown();
+        if (shown) {
+            char text[8];
+            uint8_t last_minute = (uint8_t)((shown & 0x8000u) != 0u);
+            uint16_t color = last_minute ? D_AMBER : D_MUTED;
+            uint16_t tw;
+            scope_format_u32(text, shown & 0x7FFFu);
+            ui_text_append(text, last_minute ? "s" : "m", sizeof(text));
+            tw = gfx_text_width(&font_small, text);
+            if (x - (int16_t)(tw + 18u) > title_end + 8) {
+                gfx_text_right(x, 5, &font_small, text, color, D_BG);
+                dmm_icon((int16_t)(x - (int16_t)tw - 17), 4, ICON_SLEEP_MD, color, D_BG);
+            }
+        }
     }
 }
 
@@ -11037,6 +11114,8 @@ void ui_tick(uint32_t elapsed_ms) {
         ui.sleep_ms = 0;
         ui.sleep_due = 0;
     }
+    // The countdown in the status bar changes with time alone.
+    battery_changed = battery_snapshot_changed();
 
     uint32_t charger_next = (uint32_t)ui.charger_ms + elapsed_ms;
     if (charger_next >= CHARGER_POLL_MS) {

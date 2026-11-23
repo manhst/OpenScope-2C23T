@@ -115,8 +115,26 @@ static void test_status_snapshot(void) {
     test_mv = 3900;
     battery_snapshot_store();
     assert(!battery_snapshot_changed());
-    test_mv = 4000; // The new header does not display battery voltage.
+    test_mv = 3904; // Below the 10 mV step the header prints: no repaint.
     assert(!battery_snapshot_changed());
+    test_mv = 4000; // The header shows the battery voltage.
+    assert(battery_snapshot_changed());
+    assert(!battery_snapshot_changed());
+    // The auto-sleep countdown repaints when its shown value changes:
+    // whole minutes, then seconds in the last minute.
+    ui_settings.sleep_enabled = 1; // 10 minutes
+    ui.sleep_ms = 0;
+    assert(battery_snapshot_changed());
+    ui.sleep_ms = 20000u; // still "10m"
+    assert(!battery_snapshot_changed());
+    ui.sleep_ms = 61000u; // "9m"
+    assert(battery_snapshot_changed());
+    ui.sleep_ms = 10u * 60u * 1000u - 30000u; // "30s"
+    assert(battery_snapshot_changed());
+    assert(ui_sleep_shown() == (0x8000u | 30u));
+    ui_settings.sleep_enabled = 0;
+    ui.sleep_ms = 0;
+    assert(battery_snapshot_changed());
     test_usb = 1;
     assert(battery_snapshot_changed());
     assert(!battery_snapshot_changed());
