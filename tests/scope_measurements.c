@@ -615,6 +615,57 @@ static void test_vertical_keys_set_vdiv(void) {
     assert(scope_vdiv_ch[1] == SCOPE_VDIV_COUNT - 1u);
 }
 
+// Feed frames whose mean is raw (per channel) until the calibration ends.
+static unsigned zero_cal_frames(uint8_t raw0, uint8_t raw1) {
+    unsigned frames = 0;
+    while (scope_auto_zero_active && frames < 5000u) {
+        scope_avg_raw[0] = raw0;
+        scope_avg_raw[1] = raw1;
+        scope_frame_valid = 1;
+        scope_auto_zero_service();
+        ++frames;
+    }
+    assert(!scope_auto_zero_active);
+    return frames;
+}
+
+// Long AUTO calibrates every V/div range, restores the user's ranges and
+// timebase, and reports the result.
+static void test_zero_cal_all_ranges(void) {
+    setup();
+    scope_vdiv_ch[0] = 4;
+    scope_vdiv_ch[1] = 6;
+    ui.scope_timebase = 20;
+    scope_auto_zero_begin(0x03u, 1);
+    assert(scope_auto_zero_active && scope_auto_zero_all);
+    assert(ui.scope_timebase == SCOPE_AUTO_ZERO_TIMEBASE);
+    assert(scope_vdiv_ch[0] == 0 && scope_vdiv_ch[1] == 0);
+    unsigned frames = zero_cal_frames(128, 128);
+    // Already zeroed: each range settles after the settle + stable frames.
+    assert(frames == SCOPE_VDIV_COUNT * (SCOPE_AUTO_ZERO_SETTLE + SCOPE_AUTO_ZERO_STABLE));
+    assert(scope_auto_zero_range == SCOPE_VDIV_COUNT - 1u);
+    assert(scope_vdiv_ch[0] == 4 && scope_vdiv_ch[1] == 6);
+    assert(ui.scope_timebase == 20 && !scope_auto_zero_all);
+    assert(!scope_auto_zero_fail && scope_auto_zero_swept);
+    assert(scope_auto_zero_done_ms == SCOPE_AUTO_ZERO_DONE_MS);
+
+    // A channel that never reaches the midpoint (probe on a DC level) is
+    // reported, and the ranges are still restored.
+    setup();
+    scope_vdiv_ch[0] = 2;
+    scope_auto_zero_begin(0x01u, 1);
+    zero_cal_frames(250, 128);
+    assert(scope_auto_zero_fail == 0x01u);
+    assert(scope_vdiv_ch[0] == 2 && scope_vdiv_ch[1] == 5);
+
+    // AUTO on the ZERO setting still calibrates the current range only.
+    setup();
+    scope_auto_zero_begin(0x02u, 0);
+    assert(scope_vdiv_ch[1] == 5 && !scope_auto_zero_all);
+    assert(zero_cal_frames(128, 128) == SCOPE_AUTO_ZERO_SETTLE + SCOPE_AUTO_ZERO_STABLE);
+    assert(!scope_auto_zero_fail && !scope_auto_zero_swept);
+}
+
 int main(void) {
     test_hardware_timing();
     test_frequency();
@@ -630,6 +681,7 @@ int main(void) {
     test_auto_channel_trigger_modes();
     test_auto_timeout_and_cancel();
     test_vertical_keys_set_vdiv();
+    test_zero_cal_all_ranges();
     printf("scope measurements regression tests passed (HW4=%d)\n", HW_TARGET_HW40);
     return 0;
 }

@@ -252,6 +252,33 @@ int main(void) {
     ui.scope_timebase = 8;
     ui.running = 1;
     scope_shot("scope-1");
+    // Baseline calibration: sweep in progress, then both results.
+    ui.mode = UI_MODE_SCOPE;
+    scope_fill();
+    scope_auto_zero_active = 1;
+    scope_auto_zero_all = 1;
+    scope_auto_zero_mask = 0x03u;
+    scope_auto_zero_range = 3;
+    scope_auto_zero_steps_left = 60;
+    draw_scope_immersive();
+    draw_scope_calibration_overlay();
+    save("scope-cal-sweep");
+    scope_auto_zero_active = 0;
+    scope_auto_zero_all = 0;
+    scope_auto_zero_swept = 1;
+    scope_auto_zero_done_ms = 1500;
+    draw_scope_immersive();
+    draw_scope_calibration_overlay();
+    save("scope-cal-done");
+    scope_auto_zero_fail = 0x02u;
+    draw_scope_immersive();
+    draw_scope_calibration_overlay();
+    save("scope-cal-fail");
+    scope_auto_zero_fail = 0;
+    scope_auto_zero_done_ms = 0;
+    scope_auto_zero_mask = 0;
+    ui.mode = UI_MODE_DMM;
+
     ui.running = 0;
     ui.active_ch = 2;
     ui.scope_trigger_edge = 1;

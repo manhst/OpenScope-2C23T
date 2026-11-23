@@ -334,6 +334,23 @@ static uint8_t scope_auto_zero_active;
 static uint8_t scope_auto_zero_mask;
 static uint8_t scope_auto_zero_stable_count;
 static uint8_t scope_auto_zero_steps_left;
+// Long AUTO calibrates every V/div range in turn, then shows the result.
+static uint8_t scope_auto_zero_all;
+static uint8_t scope_auto_zero_range;
+static uint8_t scope_auto_zero_settle;
+static uint8_t scope_auto_zero_fail;
+static uint8_t scope_auto_zero_saved_vdiv[2];
+static uint8_t scope_auto_zero_saved_tb;
+static uint16_t scope_auto_zero_done_ms;
+static uint8_t scope_auto_zero_swept; // the result is for every range
+enum {
+    SCOPE_AUTO_ZERO_STEPS = 120,   // frames per range before giving up
+    SCOPE_AUTO_ZERO_STABLE = 12,   // frames within +-2 codes that count as done
+    SCOPE_AUTO_ZERO_SETTLE = 2,    // frames dropped after a range change
+    SCOPE_AUTO_ZERO_DONE_MS = 1500,
+    SCOPE_AUTO_ZERO_TIMEBASE = 11, // 200 us/div: a sweep takes seconds, not minutes
+};
+
 static uint8_t scope_auto_time_active;
 static uint8_t scope_auto_time_mask;
 static uint8_t scope_auto_time_steps_left;
@@ -837,7 +854,7 @@ static uint32_t scope_timebase_unit_ns_value(void);
 static uint32_t scope_sample_period_ns(void);
 static int8_t scope_clamp_channel_pos(uint8_t idx, int16_t pos);
 static uint32_t scope_estimate_freq_hz_window(uint8_t idx, uint16_t start, uint16_t end, uint8_t min_raw, uint8_t max_raw);
-static void scope_auto_zero_begin(uint8_t mask);
+static void scope_auto_zero_begin(uint8_t mask, uint8_t all);
 static void scope_auto_zero_service(void);
 static void scope_auto_cancel(void);
 static void scope_auto_timeout_service(void);
@@ -5437,6 +5454,32 @@ static void draw_scope_cursor_readout(uint16_t gx, uint16_t gy, uint16_t gw, uin
     (void)bg;
 }
 
+static void draw_scope_cal_channels(uint16_t x, uint16_t y, uint16_t w, uint8_t mask,
+                                    const char *prefix, uint16_t fg, uint16_t bg) {
+    uint16_t pre_w = prefix ? lcd_text_width(prefix, 2) : 0u;
+    uint16_t ch1_w = lcd_text_width("CH1", 2);
+    uint16_t sep_w = lcd_text_width(" & ", 2);
+    uint16_t ch2_w = lcd_text_width("CH2", 2);
+    uint16_t total = (uint16_t)(pre_w + ((mask & 0x03u) == 0x03u ? ch1_w + sep_w + ch2_w : ch1_w));
+    uint16_t tx = (uint16_t)(x + (w - total) / 2u);
+
+    if (prefix) {
+        lcd_text(tx, y, prefix, fg, bg, 2);
+        tx = (uint16_t)(tx + pre_w);
+    }
+    if (mask & 0x01u) {
+        lcd_text(tx, y, "CH1", C_CH1, bg, 2);
+        tx = (uint16_t)(tx + ch1_w);
+    }
+    if ((mask & 0x03u) == 0x03u) {
+        lcd_text(tx, y, " & ", fg, bg, 2);
+        tx = (uint16_t)(tx + sep_w);
+    }
+    if (mask & 0x02u) {
+        lcd_text(tx, y, "CH2", C_CH2, bg, 2);
+    }
+}
+
 static void draw_scope_calibration_overlay(void) {
     uint16_t x = 38;
     uint16_t y = 78;
@@ -5444,9 +5487,11 @@ static void draw_scope_calibration_overlay(void) {
     uint16_t h = 84;
     uint16_t box_bg = C_TEXT;
     uint16_t box_fg = C_BG;
-    uint16_t done;
+    uint32_t done;
+    uint32_t total;
+    char note[24];
 
-    if (!scope_auto_zero_active) {
+    if (ui.mode != UI_MODE_SCOPE || (!scope_auto_zero_active && !scope_auto_zero_done_ms)) {
         return;
     }
 
@@ -5454,27 +5499,47 @@ static void draw_scope_calibration_overlay(void) {
     lcd_frame(x, y, w, h, C_SCOPE);
     lcd_rect(x, y, w, 4, C_SCOPE);
     lcd_text_center(x, (uint16_t)(y + 13u), w, "BASELINE CAL", box_fg, box_bg, 2);
-    if ((scope_auto_zero_mask & 0x03u) == 0x03u) {
-        uint16_t ch1_w = lcd_text_width("CH1", 2);
-        uint16_t sep_w = lcd_text_width(" & ", 2);
-        uint16_t ch2_w = lcd_text_width("CH2", 2);
-        uint16_t tx = (uint16_t)(x + (w - ch1_w - sep_w - ch2_w) / 2u);
-        lcd_text(tx, (uint16_t)(y + 38u), "CH1", C_CH1, box_bg, 2);
-        tx = (uint16_t)(tx + ch1_w);
-        lcd_text(tx, (uint16_t)(y + 38u), " & ", box_fg, box_bg, 2);
-        tx = (uint16_t)(tx + sep_w);
-        lcd_text(tx, (uint16_t)(y + 38u), "CH2", C_CH2, box_bg, 2);
-    } else if (scope_auto_zero_mask & 0x02u) {
-        lcd_text_center(x, (uint16_t)(y + 38u), w, "CH2", C_CH2, box_bg, 2);
-    } else {
-        lcd_text_center(x, (uint16_t)(y + 38u), w, "CH1", C_CH1, box_bg, 2);
+
+    if (!scope_auto_zero_active) {
+        // Result, shown for SCOPE_AUTO_ZERO_DONE_MS after the last range.
+        if (scope_auto_zero_fail) {
+            draw_scope_cal_channels(x, (uint16_t)(y + 38u), w, scope_auto_zero_fail, "CHECK ",
+                                    RGB565(200, 30, 45), box_bg);
+            lcd_text_center(x, (uint16_t)(y + 62u), w, "REMOVE PROBE AND RETRY", C_PANEL_2, box_bg, 1);
+        } else {
+            lcd_text_center(x, (uint16_t)(y + 38u), w, "DONE", RGB565(22, 128, 60), box_bg, 2);
+            lcd_text_center(x, (uint16_t)(y + 62u), w,
+                            scope_auto_zero_swept ? "ALL V/DIV RANGES SAVED" : "SAVED",
+                            C_PANEL_2, box_bg, 1);
+        }
+        return;
     }
-    lcd_text_center(x, (uint16_t)(y + 58u), w, "REMOVE PROBE  WAIT", C_PANEL_2, box_bg, 1);
-    done = (uint16_t)(120u - (scope_auto_zero_steps_left > 120u ? 120u : scope_auto_zero_steps_left));
+
+    draw_scope_cal_channels(x, (uint16_t)(y + 38u), w, scope_auto_zero_mask, 0, box_fg, box_bg);
+    done = (uint32_t)(SCOPE_AUTO_ZERO_STEPS -
+                      (scope_auto_zero_steps_left > SCOPE_AUTO_ZERO_STEPS ? SCOPE_AUTO_ZERO_STEPS
+                                                                          : scope_auto_zero_steps_left));
+    total = SCOPE_AUTO_ZERO_STEPS;
+    if (scope_auto_zero_all) {
+        uint8_t n = 0;
+        const char *head = "REMOVE PROBE  ";
+        while (*head) {
+            note[n++] = *head++;
+        }
+        note[n++] = (char)('1' + scope_auto_zero_range);
+        note[n++] = '/';
+        note[n++] = (char)('0' + SCOPE_VDIV_COUNT);
+        note[n] = 0;
+        done += (uint32_t)scope_auto_zero_range * SCOPE_AUTO_ZERO_STEPS;
+        total *= SCOPE_VDIV_COUNT;
+    } else {
+        scope_text_copy(note, "REMOVE PROBE  WAIT", sizeof(note));
+    }
+    lcd_text_center(x, (uint16_t)(y + 58u), w, note, C_PANEL_2, box_bg, 1);
     lcd_frame((uint16_t)(x + 18u), (uint16_t)(y + 72u), (uint16_t)(w - 36u), 5, C_GRID);
     lcd_rect((uint16_t)(x + 19u),
              (uint16_t)(y + 73u),
-             (uint16_t)(((uint32_t)(w - 38u) * done) / 120u),
+             (uint16_t)(((uint32_t)(w - 38u) * done) / total),
              3,
              C_SCOPE);
 }
@@ -7897,6 +7962,15 @@ static void ui_switch_mode(ui_mode_t mode) {
         }
     }
     if (old_mode == UI_MODE_SCOPE && mode != UI_MODE_SCOPE) {
+        if (scope_auto_zero_all) { // left mid-sweep: put the user's ranges back
+            scope_auto_zero_all = 0;
+            scope_vdiv_ch[0] = scope_auto_zero_saved_vdiv[0];
+            scope_vdiv_ch[1] = scope_auto_zero_saved_vdiv[1];
+            ui.scope_timebase = scope_auto_zero_saved_tb;
+            ui.scope_vdiv = scope_safe_vdiv();
+        }
+        scope_auto_zero_active = 0;
+        scope_auto_zero_done_ms = 0;
         scope_hw_slow_stop();
         if (scope_fft_src == 4u) {
             bode_shutdown(0);
@@ -9195,7 +9269,55 @@ static uint8_t scope_auto_zero_channel_step(uint8_t idx) {
     return 1;
 }
 
-static void scope_auto_zero_begin(uint8_t mask) {
+// Channels whose baseline is still more than 2 codes from the midpoint.
+static uint8_t scope_auto_zero_off(uint8_t mask) {
+    uint8_t off = 0;
+
+    for (uint8_t ch = 0; ch < 2u; ++ch) {
+        int16_t delta = (int16_t)scope_avg_raw[ch] - 128;
+        if ((mask & (uint8_t)(1u << ch)) && (delta > 2 || delta < -2)) {
+            off = (uint8_t)(off | (1u << ch));
+        }
+    }
+    return off;
+}
+
+static void scope_auto_zero_set_range(uint8_t mask) {
+    for (uint8_t ch = 0; ch < 2u; ++ch) {
+        if (mask & (uint8_t)(1u << ch)) {
+            scope_vdiv_ch[ch] = scope_auto_zero_range;
+        }
+    }
+    ui.scope_vdiv = scope_safe_vdiv();
+    scope_apply_settings(); // also clears the calibration state
+}
+
+static void scope_auto_zero_run(uint8_t mask) {
+    scope_auto_zero_mask = mask;
+    scope_auto_zero_stable_count = 0;
+    scope_auto_zero_active = 1;
+    scope_auto_zero_steps_left = SCOPE_AUTO_ZERO_STEPS;
+    scope_auto_zero_settle = SCOPE_AUTO_ZERO_SETTLE;
+    scope_apply_zero_offsets_only();
+    scope_hw_arm();
+}
+
+static void scope_auto_zero_restore(void) {
+    if (!scope_auto_zero_all) {
+        return;
+    }
+    scope_auto_zero_all = 0;
+    scope_vdiv_ch[0] = scope_auto_zero_saved_vdiv[0];
+    scope_vdiv_ch[1] = scope_auto_zero_saved_vdiv[1];
+    ui.scope_timebase = scope_auto_zero_saved_tb;
+    ui.scope_vdiv = scope_safe_vdiv();
+    scope_apply_settings();
+    scope_hw_arm();
+}
+
+// mask: channel bits. all: every V/div range (long AUTO) instead of the
+// current one (AUTO on the ZERO setting).
+static void scope_auto_zero_begin(uint8_t mask, uint8_t all) {
     if (!scope_hw_enabled()) {
         return;
     }
@@ -9211,25 +9333,40 @@ static void scope_auto_zero_begin(uint8_t mask) {
         scope_zero_offset[1] = 0;
         scope_ch_enabled[1] = 1;
     }
-    scope_auto_zero_mask = mask;
-    scope_auto_zero_stable_count = 0;
-    scope_auto_zero_active = 1;
-    scope_auto_zero_steps_left = 120;
     scope_auto_cancel();
+    scope_auto_zero_restore();
+    scope_auto_zero_done_ms = 0;
+    scope_auto_zero_fail = 0;
+    scope_auto_zero_swept = all;
+    if (all) {
+        scope_auto_zero_all = 1;
+        scope_auto_zero_saved_vdiv[0] = scope_vdiv_ch[0];
+        scope_auto_zero_saved_vdiv[1] = scope_vdiv_ch[1];
+        scope_auto_zero_saved_tb = ui.scope_timebase;
+        if (ui.scope_timebase > SCOPE_AUTO_ZERO_TIMEBASE) {
+            ui.scope_timebase = SCOPE_AUTO_ZERO_TIMEBASE;
+        }
+        scope_auto_zero_range = 0;
+        scope_auto_zero_set_range(mask);
+    }
     scope_trigger_offset = 0;
     scope_trigger_locked = 0;
     ui.running = 1;
     scope_clear_menus();
     ui.scope_move_menu_ms = 0;
     ui.chrome_visible = 0;
-    scope_apply_zero_offsets_only();
-    scope_hw_arm();
+    scope_auto_zero_run(mask);
 }
 
 static void scope_auto_zero_service(void) {
     uint8_t changed;
+    uint8_t mask;
 
     if (!scope_auto_zero_active || !scope_frame_valid) {
+        return;
+    }
+    if (scope_auto_zero_settle) {
+        --scope_auto_zero_settle; // relays and the offset DAC settle first
         return;
     }
     changed = 0;
@@ -9246,13 +9383,32 @@ static void scope_auto_zero_service(void) {
         scope_auto_zero_stable_count = 0;
         settings_note(&ui_settings);
         scope_apply_zero_offsets_only();
+    } else if (scope_auto_zero_off(scope_auto_zero_mask)) {
+        // Unchanged but still off zero: the offset DAC hit its limit. Not
+        // settled, so it ends as a failure instead of a false DONE.
+        scope_auto_zero_stable_count = 0;
     } else if (scope_auto_zero_stable_count < 30u) {
         ++scope_auto_zero_stable_count;
     }
-    if (scope_auto_zero_stable_count >= 12u || !scope_auto_zero_steps_left) {
-        scope_auto_zero_active = 0;
-        scope_auto_zero_mask = 0;
+    if (scope_auto_zero_stable_count < SCOPE_AUTO_ZERO_STABLE && scope_auto_zero_steps_left) {
+        return;
     }
+
+    mask = scope_auto_zero_mask;
+    if (scope_auto_zero_stable_count < SCOPE_AUTO_ZERO_STABLE) {
+        uint8_t off = scope_auto_zero_off(mask);
+        scope_auto_zero_fail |= off ? off : mask; // never settled: probe still connected?
+    }
+    if (scope_auto_zero_all && scope_auto_zero_range + 1u < SCOPE_VDIV_COUNT) {
+        ++scope_auto_zero_range;
+        scope_auto_zero_set_range(mask);
+        scope_auto_zero_run(mask);
+        return;
+    }
+    scope_auto_zero_active = 0;
+    scope_auto_zero_mask = mask; // kept for the result banner
+    scope_auto_zero_restore();
+    scope_auto_zero_done_ms = SCOPE_AUTO_ZERO_DONE_MS;
 }
 
 static void scope_auto_cancel(void) {
@@ -10671,7 +10827,7 @@ void ui_handle_keys(uint32_t events) {
     }
 
     if ((events & KEY_AUTO_LONG) && ui.mode == UI_MODE_SCOPE) {
-        scope_auto_zero_begin(scope_auto_zero_long_mask());
+        scope_auto_zero_begin(scope_auto_zero_long_mask(), 1);
         ui_render();
         return;
     }
@@ -10771,7 +10927,7 @@ void ui_handle_keys(uint32_t events) {
             dmm_apply_selected_mode(DMM_MODE_AUTO);
         } else if (ui.mode == UI_MODE_SCOPE) {
             if (ui.scope_param == SCOPE_PARAM_ZERO) {
-                scope_auto_zero_begin((uint8_t)(ui.active_ch == 2u ? 0x02u : 0x01u));
+                scope_auto_zero_begin((uint8_t)(ui.active_ch == 2u ? 0x02u : 0x01u), 0);
             } else if (ui.scope_trigger_menu) {
                 uint8_t idx = scope_trigger_source_index();
                 if (scope_frame_valid) {
@@ -11256,6 +11412,18 @@ void ui_tick(uint32_t elapsed_ms) {
             }
         } else {
             ui.scope_move_menu_ms = (uint16_t)(ui.scope_move_menu_ms - elapsed_ms);
+        }
+    }
+
+    if (scope_auto_zero_done_ms) {
+        if (elapsed_ms >= scope_auto_zero_done_ms) {
+            scope_auto_zero_done_ms = 0;
+            if (ui.mode == UI_MODE_SCOPE && !rendered) {
+                ui_render(); // remove the result banner even without a new frame
+                rendered = 1;
+            }
+        } else {
+            scope_auto_zero_done_ms = (uint16_t)(scope_auto_zero_done_ms - elapsed_ms);
         }
     }
 
