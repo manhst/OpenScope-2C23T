@@ -542,8 +542,8 @@ static const uint16_t C_SCOPE = RGB565(56, 189, 248);
 static const uint16_t C_GEN = RGB565(192, 132, 252);
 
 // Modern UI palette (multimeter, menu, settings, scope).
-static const uint16_t D_BG = RGB565(11, 14, 19);
-static const uint16_t D_CARD = RGB565(21, 26, 34);
+static const uint16_t D_BG = RGB565(7, 10, 15);
+static const uint16_t D_CARD = RGB565(20, 25, 34);
 static const uint16_t D_TRACK = RGB565(38, 45, 58);
 static const uint16_t D_TEXT = RGB565(243, 245, 249);
 static const uint16_t D_SUB = RGB565(199, 207, 219);
@@ -561,9 +561,45 @@ static const uint16_t D_GREEN_TINT = RGB565(27, 68, 52);
 static const uint16_t D_GREEN_SUB = RGB565(185, 233, 211);
 static const uint16_t D_GEN = RGB565(167, 139, 250);
 static const uint16_t D_SCOPE = RGB565(52, 211, 153);
-static const uint16_t D_PLOT = RGB565(14, 18, 25);
+static const uint16_t D_PLOT = RGB565(11, 15, 21);
 static const uint16_t D_PLOT_DOT = RGB565(52, 62, 78);
 static const uint16_t D_PLOT_AXIS = RGB565(86, 100, 118);
+
+// ---------------------------------------------------------------------------
+// Surfaces. A card is its fill inside a one-pixel edge a little lighter than
+// the fill, which lifts it off the background without a shadow; tinted cards
+// (red, green) get a matching tinted edge. A selected surface is a two-pixel
+// accent frame around a fill tinted with the accent, with a soft inner ring
+// between the two. Both return the fill so text can blend into it.
+// ---------------------------------------------------------------------------
+
+static uint16_t ui_card_edge(uint16_t fill) {
+    return gfx_blend(RGB565(150, 172, 204), fill, 2);
+}
+
+static uint16_t ui_card(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t r, uint16_t fill, uint16_t under) {
+    uint16_t edge = ui_card_edge(fill);
+    gfx_round_rect(x, y, w, h, r, edge, under);
+    gfx_round_rect((uint16_t)(x + 1u), (uint16_t)(y + 1u), (uint16_t)(w - 2u), (uint16_t)(h - 2u),
+                   r ? (uint16_t)(r - 1u) : 0u, fill, edge);
+    return fill;
+}
+
+static uint16_t ui_selected_fill(uint16_t accent) {
+    return gfx_blend(accent, D_CARD, 3);
+}
+
+static uint16_t ui_selected_card(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t r, uint16_t accent,
+                                 uint16_t under) {
+    uint16_t fill = ui_selected_fill(accent);
+    uint16_t ring = gfx_blend(accent, fill, 5);
+    gfx_round_rect(x, y, w, h, r, accent, under);
+    gfx_round_rect((uint16_t)(x + 2u), (uint16_t)(y + 2u), (uint16_t)(w - 4u), (uint16_t)(h - 4u),
+                   r > 2u ? (uint16_t)(r - 2u) : 0u, ring, accent);
+    gfx_round_rect((uint16_t)(x + 3u), (uint16_t)(y + 3u), (uint16_t)(w - 6u), (uint16_t)(h - 6u),
+                   r > 3u ? (uint16_t)(r - 3u) : 0u, fill, ring);
+    return fill;
+}
 
 enum {
     DMM_MODE_AUTO,
@@ -2367,14 +2403,7 @@ static void ui_chip_value(const char *in, char out[16]) {
 
 // Card behind a chip; returns its fill so the text can blend into it.
 static uint16_t ui_chip_frame(uint16_t x, uint16_t y, uint16_t w, uint16_t accent, uint8_t active) {
-    uint16_t bg = active ? gfx_blend(accent, D_BG, 3) : D_CARD;
-    if (active) {
-        gfx_round_rect(x, y, w, 32, 10, accent, D_BG);
-        gfx_round_rect((uint16_t)(x + 2u), (uint16_t)(y + 2u), (uint16_t)(w - 4u), 28, 8, bg, accent);
-    } else {
-        gfx_round_rect(x, y, w, 32, 10, bg, D_BG);
-    }
-    return bg;
+    return active ? ui_selected_card(x, y, w, 32, 10, accent, D_BG) : ui_card(x, y, w, 32, 10, D_CARD, D_BG);
 }
 
 static void ui_draw_chip(uint16_t x, uint16_t y, uint16_t w, const char *label, const char *value,
@@ -3824,6 +3853,9 @@ static void ui_draw_status_bar_ex(const char *title, uint16_t dot, uint8_t brand
     int16_t x;
 
     lcd_rect(0, 0, LCD_WIDTH, DMM_STATUS_H, D_BG);
+    // A hairline under the bar, inside its own rows so content redraws
+    // below it never have to repaint it.
+    lcd_rect(8, DMM_STATUS_H - 1u, LCD_WIDTH - 16u, 1, ui_card_edge(D_BG));
     if (brand) {
         int16_t dx = (int16_t)(ui_draw_status_brand(6, 3) + 10);
         gfx_round_rect((uint16_t)dx, 8, 6, 6, 3, dot, D_BG);
@@ -4049,7 +4081,7 @@ static void dmm_draw_reading_card(void) {
     uint16_t bar_color = warning >= 2u ? D_RED : (warning ? D_AMBER : D_ACCENT);
     int16_t x;
 
-    gfx_round_rect(DMM_CARD_X, DMM_CARD_Y, DMM_CARD_W, DMM_CARD_H, 14, card, D_BG);
+    ui_card(DMM_CARD_X, DMM_CARD_Y, DMM_CARD_W, DMM_CARD_H, 14, card, D_BG);
     dmm_draw_card_header(card, D_SUB, warning);
 
     // A relative reading is a difference: show its sign either way.
@@ -4125,7 +4157,7 @@ static void dmm_draw_stats(void) {
     for (uint8_t i = 0; i < 3u; ++i) {
         uint16_t x = (uint16_t)(DMM_X + i * 103u);
         char text[12];
-        gfx_round_rect(x, DMM_STATS_Y, 98, DMM_STATS_H, 10, D_CARD, D_BG);
+        ui_card(x, DMM_STATS_Y, 98, DMM_STATS_H, 10, D_CARD, D_BG);
         gfx_text((int16_t)(x + 9u), DMM_STATS_Y + 4, &font_small, labels[i], D_MUTED, D_CARD);
         if (valid) {
             int32_t v = i == 0u ? dmm_stats.min_value : (i == 1u ? dmm_stats.avg_value : dmm_stats.max_value);
@@ -4146,7 +4178,7 @@ static void dmm_draw_live_card(uint8_t detected) {
     uint16_t card = detected ? D_RED_CARD : D_CARD;
     uint16_t icon_bg = detected ? D_RED : D_TRACK;
 
-    gfx_round_rect(DMM_CARD_X, DMM_CARD_Y, DMM_CARD_W, DMM_TALL_H, 14, card, D_BG);
+    ui_card(DMM_CARD_X, DMM_CARD_Y, DMM_CARD_W, DMM_TALL_H, 14, card, D_BG);
     gfx_text(DMM_IN_X, DMM_CARD_Y + 7, &font_medium, dmm_mode_names[ui.dmm_mode], detected ? D_RED_SUB : D_SUB, card);
     gfx_round_rect(CX - 28, CY - 28, 56, 56, 28, icon_bg, card);
     dmm_icon(CX - 16, CY - 16, ICON_ZAP_XL, detected ? D_BG : D_MUTED, icon_bg);
@@ -4251,7 +4283,11 @@ static void draw_dmm_softkeys(void) {
         uint8_t active = i == selected;
         uint8_t mode = active ? ui.dmm_mode : dmm_groups[i].modes[dmm_group_choice[i]];
         uint16_t fill = active ? D_ACCENT : D_CARD;
-        gfx_round_rect(x, DMM_KEYS_Y, 71, DMM_KEYS_H, 13, fill, D_BG);
+        if (active) {
+            gfx_round_rect(x, DMM_KEYS_Y, 71, DMM_KEYS_H, 13, fill, D_BG);
+        } else {
+            ui_card(x, DMM_KEYS_Y, 71, DMM_KEYS_H, 13, fill, D_BG);
+        }
         dmm_draw_softkey_label(mode, (int16_t)x, active ? D_BG : D_SUB, fill);
     }
 }
@@ -6827,7 +6863,7 @@ static void draw_gen_wave_preview(uint16_t x, uint16_t y, uint16_t w, uint16_t h
 // Wave name and preview in one card.
 static void draw_gen_wave_card(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
     uint8_t wave = ui.gen_wave < SIGGEN_WAVE_COUNT ? ui.gen_wave : SIGGEN_WAVE_SINE;
-    gfx_round_rect(x, y, w, h, 14, D_CARD, D_BG);
+    ui_card(x, y, w, h, 14, D_CARD, D_BG);
     gfx_text((int16_t)(x + 12u), (int16_t)(y + 6u), &font_small, "WAVEFORM", D_MUTED, D_CARD);
     gfx_text((int16_t)(x + 12u), (int16_t)(y + 17u), &font_large, gen_wave_names[wave], D_TEXT, D_CARD);
     draw_gen_wave_preview((uint16_t)(x + 8u), (uint16_t)(y + 54u), (uint16_t)(w - 16u), (uint16_t)(h - 62u), D_CARD);
@@ -6841,7 +6877,7 @@ static void draw_gen_output_panel(uint16_t x, uint16_t y, uint16_t w, uint16_t h
     uint16_t cx = (uint16_t)(x + w / 2u);
     uint16_t cy = (uint16_t)(y + h / 2u - 6u);
 
-    gfx_round_rect(x, y, w, h, 14, card, bg);
+    ui_card(x, y, w, h, 14, card, bg);
     gfx_text_center((int16_t)x, (int16_t)(y + 6u), w, &font_small, "OUTPUT", on ? D_GREEN_SUB : D_MUTED, card);
     gfx_round_rect((uint16_t)(cx - 22u), (uint16_t)(cy - 22u), 44, 44, 22, on ? D_GREEN : D_TRACK, card);
     gfx_text((int16_t)(cx - 8u), (int16_t)(cy - 8u), &font_icons, ICON_START_MD, on ? D_BG : D_SUB, on ? D_GREEN : D_TRACK);
@@ -7084,14 +7120,7 @@ static void draw_mode_menu_card(uint8_t index) {
     uint8_t selected = ui.menu_index == index;
     uint16_t x = (uint16_t)(X0 + (index % 2u) * (W + GAP));
     uint16_t y = (uint16_t)(Y0 + (index / 2u) * (H + GAP));
-    uint16_t bg = selected ? RGB565(30, 37, 48) : D_CARD;
-
-    if (selected) {
-        gfx_round_rect(x, y, W, H, 14, card->accent, D_BG);
-        gfx_round_rect((uint16_t)(x + 2u), (uint16_t)(y + 2u), W - 4u, H - 4u, 12, bg, card->accent);
-    } else {
-        gfx_round_rect(x, y, W, H, 14, bg, D_BG);
-    }
+    uint16_t bg = selected ? ui_selected_card(x, y, W, H, 14, card->accent, D_BG) : ui_card(x, y, W, H, 14, D_CARD, D_BG);
 
     // Icon tile: tinted when idle, solid accent when selected.
     gfx_round_rect((uint16_t)(x + 12u), (uint16_t)(y + 11u), 36, 36, 10,
@@ -7204,7 +7233,7 @@ static const uint16_t D_RED_TINT = RGB565(74, 24, 32);
 static int16_t ui_draw_keycap(int16_t x, int16_t y, const char *icon, const char *word, uint16_t under) {
     uint16_t inner = icon ? gfx_text_width(&font_icons, icon) : gfx_text_width(&font_small, word);
     uint16_t w = (uint16_t)(inner + 10u);
-    gfx_round_rect((uint16_t)x, (uint16_t)y, w, 15, 5, D_TRACK, under);
+    ui_card((uint16_t)x, (uint16_t)y, w, 15, 5, D_TRACK, under);
     if (icon) {
         gfx_text((int16_t)(x + 5), (int16_t)(y + 2), &font_icons, icon, D_TEXT, D_TRACK);
     } else {
@@ -7428,14 +7457,7 @@ static void draw_settings_tile(uint8_t row, uint16_t x, uint16_t y, uint16_t w, 
     uint8_t danger = row == SETTINGS_ROW_RESET;
     uint16_t accent = danger ? D_RED : D_SETTINGS;
     uint16_t tint = danger ? D_RED_TINT : D_SETTINGS_TINT;
-    uint16_t bg = selected ? RGB565(30, 37, 48) : D_CARD;
-
-    if (selected) {
-        gfx_round_rect(x, y, w, h, 12, accent, D_BG);
-        gfx_round_rect((uint16_t)(x + 2u), (uint16_t)(y + 2u), (uint16_t)(w - 4u), (uint16_t)(h - 4u), 10, bg, accent);
-    } else {
-        gfx_round_rect(x, y, w, h, 12, bg, D_BG);
-    }
+    uint16_t bg = selected ? ui_selected_card(x, y, w, h, 12, accent, D_BG) : ui_card(x, y, w, h, 12, D_CARD, D_BG);
     gfx_round_rect((uint16_t)(x + 9u), (uint16_t)(y + 9u), 24, 24, 7, selected ? accent : tint, bg);
     gfx_text((int16_t)(x + 13u), (int16_t)(y + 13u), &font_icons, settings_tile_icons[row],
              selected ? D_BG : accent, selected ? accent : tint);
@@ -7463,7 +7485,7 @@ static void draw_settings_info(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
     int16_t right;
     int16_t tx;
 
-    gfx_round_rect(x, y, w, h, 12, D_CARD, D_BG);
+    ui_card(x, y, w, h, 12, D_CARD, D_BG);
     gfx_round_rect((uint16_t)(x + 9u), (uint16_t)(y + (h - 24u) / 2u), 24, 24, 7, D_TRACK, D_CARD);
     gfx_text((int16_t)(x + 13u), (int16_t)(y + (h - 24u) / 2u + 4u), &font_icons, ICON_INFO_MD, D_SUB, D_TRACK);
     gfx_text((int16_t)(x + 42u), (int16_t)(y + 8u), &font_small, "Firmware", D_MUTED, D_CARD);
